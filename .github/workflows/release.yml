@@ -131,16 +131,62 @@ jobs:
           echo "mini=$(nub --node -p "require('./packages/mini/package.json').version")" >> "$GITHUB_OUTPUT"
 
       # This job cannot publish. Both trusted publishers are stage-only, so all it can do is put a version in npm's staged queue, where it is not installable and its number is reserved; a maintainer then approves it with 2FA. A credential that reaches this workflow can therefore fill a queue and nothing else.
+      - name: Report zod stage start to Rollouts
+        id: rollouts-zod
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CHANGE_MONITOR_ENV: npm
+          CHANGE_MONITOR_SERVICE: zod
+          DEPLOY_VERSION: ${{ github.sha }}
+          CHANGE_MONITOR_ACTOR: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash .github/scripts/rollouts-reporter.sh bootstrap
+          bash .github/scripts/rollouts-reporter.sh start
       - name: Stage zod on npm
+        id: stage-zod
         env:
           VERSION: ${{ steps.version.outputs.zod }}
         run: bash .github/scripts/npm-stage-publish.sh packages/zod --provenance
+      - name: Report zod stage failure to Rollouts
+        if: steps.stage-zod.outcome == 'failure' || steps.stage-zod.outcome == 'cancelled'
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CHANGE_MONITOR_ENV: npm
+          CHANGE_MONITOR_SERVICE: zod
+          DEPLOY_VERSION: ${{ github.sha }}
+          CHANGE_MONITOR_ACTOR: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ROLLOUTS_DEPLOYMENT: ${{ steps.rollouts-zod.outputs.deployment }}
+          ROLLOUTS_OUTCOME: ${{ steps.stage-zod.outcome }}
+        run: bash .github/scripts/rollouts-reporter.sh finish
 
       # @zod/mini ships in lockstep with zod and is a no-op when its version is already on the registry, so it runs unconditionally (the first release of the scoped package rides on a merge that does not bump zod itself). It is staged here, next to zod and before the wait, so both versions are in the queue when the maintainer sits down: one approval session covers the pair, and `pnpm stage approve` takes them under a single one-time password. Under the old irreversible publish this step ran last, so that a failed @zod/mini publish could not cost zod its tag; staging removes that hazard, because a failure here leaves zod staged and unapproved rather than live and unmatched.
+      - name: Report @zod/mini stage start to Rollouts
+        id: rollouts-mini
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CHANGE_MONITOR_ENV: npm
+          CHANGE_MONITOR_SERVICE: "@zod/mini"
+          DEPLOY_VERSION: ${{ github.sha }}
+          CHANGE_MONITOR_ACTOR: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash .github/scripts/rollouts-reporter.sh bootstrap
+          bash .github/scripts/rollouts-reporter.sh start
       - name: Stage @zod/mini on npm
+        id: stage-mini
         env:
           VERSION: ${{ steps.version.outputs.mini }}
         run: bash .github/scripts/npm-stage-publish.sh packages/mini --provenance --access public
+      - name: Report @zod/mini stage failure to Rollouts
+        if: steps.stage-mini.outcome == 'failure' || steps.stage-mini.outcome == 'cancelled'
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CHANGE_MONITOR_ENV: npm
+          CHANGE_MONITOR_SERVICE: "@zod/mini"
+          DEPLOY_VERSION: ${{ github.sha }}
+          CHANGE_MONITOR_ACTOR: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ROLLOUTS_DEPLOYMENT: ${{ steps.rollouts-mini.outputs.deployment }}
+          ROLLOUTS_OUTCOME: ${{ steps.stage-mini.outcome }}
+        run: bash .github/scripts/rollouts-reporter.sh finish
 
       - name: Check whether npm serves both versions
         id: served
@@ -204,8 +250,10 @@ jobs:
       pull-requests: read
       id-token: write
     steps:
+      - uses: actions/checkout@v7
       # THE HUMAN GATE. The run resumes on the environment approval, which says nothing about npm, so the tag, the GitHub release and both JSR publishes wait here until the registry serves both versions; nothing public ever describes a version npm did not ship. The loop also absorbs the automated review npm runs once a version is approved, which held 4.5.0 for 16 minutes, 4.5.3 for 25 and 4.6.0 for 116; none of those is an upper bound. If the approval comes later, re-run this job.
       - name: Wait for npm to serve both versions
+        id: npm-live
         env:
           ZOD_VERSION: ${{ needs.stage.outputs.zod }}
           MINI_VERSION: ${{ needs.stage.outputs.mini }}
@@ -226,6 +274,26 @@ jobs:
           }
           wait_for "zod@$ZOD_VERSION" "https://registry.npmjs.org/zod/$ZOD_VERSION"
           wait_for "@zod/mini@$MINI_VERSION" "https://registry.npmjs.org/@zod%2fmini/$MINI_VERSION"
+      - name: Report zod live to Rollouts
+        if: always()
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CHANGE_MONITOR_ENV: npm
+          CHANGE_MONITOR_SERVICE: zod
+          DEPLOY_VERSION: ${{ github.sha }}
+          CHANGE_MONITOR_ACTOR: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ROLLOUTS_OUTCOME: ${{ steps.npm-live.outcome }}
+        run: bash .github/scripts/rollouts-reporter.sh finish
+      - name: Report @zod/mini live to Rollouts
+        if: always()
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CHANGE_MONITOR_ENV: npm
+          CHANGE_MONITOR_SERVICE: "@zod/mini"
+          DEPLOY_VERSION: ${{ github.sha }}
+          CHANGE_MONITOR_ACTOR: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ROLLOUTS_OUTCOME: ${{ steps.npm-live.outcome }}
+        run: bash .github/scripts/rollouts-reporter.sh finish
 
       - uses: actions/checkout@v7
         with:
